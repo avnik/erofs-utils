@@ -99,6 +99,7 @@ static struct option long_options[] = {
 #ifdef OCIEROFS_ENABLED
 	{"oci", optional_argument, NULL, 534},
 #endif
+	{"nix-closure", required_argument, NULL, 540},
 	{"zD", optional_argument, NULL, 536},
 	{"MZ", optional_argument, NULL, 537},
 	{"xattr-prefix", required_argument, NULL, 538},
@@ -265,6 +266,7 @@ static void usage(int argc, char **argv)
 		" --product-out=X        X=product_out directory\n"
 		" --fs-config-file=X     X=fs_config file\n"
 #endif
+        " --nix-closure=X       X=nix_closure_file\n"
 #ifdef EROFS_MT_ENABLED
 		, erofs_get_available_processors() /* --workers= */
 #endif
@@ -320,6 +322,7 @@ static enum {
 	EROFS_MKFS_SOURCE_S3,
 	EROFS_MKFS_SOURCE_OCI,
 	EROFS_MKFS_SOURCE_REBUILD,
+    EROFS_MKFS_SOURCE_NIX,
 } source_mode;
 
 static unsigned int rebuild_src_count;
@@ -1548,6 +1551,12 @@ static int mkfs_parse_options_cfg(struct erofs_importer_params *params,
 				return err;
 			}
 			break;
+		case 540:
+			cfg.c_src_path = strdup(optarg);
+			if (!cfg.c_src_path)
+				return -ENOMEM;
+			source_mode = EROFS_MKFS_SOURCE_NIX;
+			break;
 		case 'V':
 			version();
 			exit(0);
@@ -1585,10 +1594,10 @@ static int mkfs_parse_options_cfg(struct erofs_importer_params *params,
 		err = mkfs_parse_sources(argc, argv, optind);
 		if (err)
 			return err;
-	} else if (source_mode != EROFS_MKFS_SOURCE_TAR) {
+	} else if ((source_mode != EROFS_MKFS_SOURCE_TAR) && (source_mode != EROFS_MKFS_SOURCE_NIX)) {
 		erofs_err("missing argument: SOURCE(s)");
 		return -EINVAL;
-	} else {
+	} else if (source_mode == EROFS_MKFS_SOURCE_TAR) {
 		int dupfd;
 
 		dupfd = dup(STDIN_FILENO);
@@ -1709,6 +1718,71 @@ void erofs_show_progs(int argc, char *argv[])
 {
 	if (cfg.c_dbg_lvl >= EROFS_WARN)
 		printf("%s %s\n", basename(argv[0]), cfg.c_version);
+}
+
+/* Closure format: one absolute /nix/store path per line. */
+static int mkfs_erofs_import_nix_store_paths(struct erofs_importer *importer,
+					      const char *closure)
+{
+	FILE *f;
+	char buf[PATH_MAX + 2];
+	unsigned int lineno = 0;
+	int ret = 0;
+
+	f = fopen(closure, "r");
+	if (!f) {
+		erofs_err("failed to open closure %s: %s",
+			  closure, strerror(errno));
+		return -errno;
+	}
+
+	while (fgets(buf, sizeof(buf), f)) {
+		char *line = buf;
+		char *end;
+
+		++lineno;
+		end = line + strlen(line);
+
+		/* Line too long for our buffer. */
+		if (end == line || end[-1] != '\n') {
+			if (!feof(f)) {
+				erofs_err("closure %s:%u: line too long",
+					  closure, lineno);
+				ret = -ENAMETOOLONG;
+				break;
+			}
+		}
+
+		/* Strip trailing newlines and CR. */
+		while (end > line && (end[-1] == '\n' || end[-1] == '\r'))
+			*--end = '\0';
+
+		while (*line && isspace((unsigned char)*line))
+			++line;
+		if (!*line || *line == '#')
+			continue;
+
+		end = line + strlen(line);
+		while (end > line && isspace((unsigned char)end[-1]))
+			*--end = '\0';
+
+		if (line[0] != '/') {
+			erofs_err("closure %s:%u: path must be absolute: %s",
+				  closure, lineno, line);
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = erofs_tree_from_nix_store(importer, line);
+		if (ret) {
+			erofs_err("closure %s:%u: failed to import %s: %s",
+				  closure, lineno, line, erofs_strerror(ret));
+			break;
+		}
+	}
+
+	fclose(f);
+	return ret;
 }
 
 static int erofs_mkfs_rebuild_load_trees(struct erofs_inode *root)
@@ -1931,6 +2005,7 @@ int main(int argc, char **argv)
 		erofs_uuid_generate(g_sbi.uuid);
 
 	if ((source_mode == EROFS_MKFS_SOURCE_TAR && !erofstar.index_mode) ||
+	    (source_mode == EROFS_MKFS_SOURCE_NIX) ||
 	    (source_mode == EROFS_MKFS_SOURCE_S3) ||
 	    (source_mode == EROFS_MKFS_SOURCE_OCI)) {
 		err = erofs_diskbuf_init(1);
@@ -2033,6 +2108,8 @@ int main(int argc, char **argv)
 			;
 	} else if (source_mode == EROFS_MKFS_SOURCE_REBUILD) {
 		err = erofs_mkfs_rebuild_load_trees(root);
+    } else if (source_mode == EROFS_MKFS_SOURCE_NIX) {
+        err = mkfs_erofs_import_nix_store_paths(&importer, cfg.c_src_path);
 #ifdef S3EROFS_ENABLED
 	} else if (source_mode == EROFS_MKFS_SOURCE_S3) {
 		if (!s3cfg.access_key[0] && getenv("AWS_ACCESS_KEY_ID")) {
@@ -2076,7 +2153,7 @@ int main(int argc, char **argv)
 		goto exit;
 
 	err = erofs_importer_load_tree(&importer,
-				       source_mode != EROFS_MKFS_SOURCE_LOCALDIR,
+				       ((source_mode != EROFS_MKFS_SOURCE_LOCALDIR) && (source_mode != EROFS_MKFS_SOURCE_NIX)),
 				       incremental_mode);
 	if (err)
 		goto exit;

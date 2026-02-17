@@ -2476,3 +2476,46 @@ struct erofs_inode *erofs_make_root_inode_from_sourcedir(struct erofs_importer *
 	root->i_parent = root;
 	return root;
 }
+
+static inline const char *basename_nix(const char *path)
+{
+	const char *p;
+
+	p = memrchr(path, '/', strlen(path));
+	if (!p)
+		return path;
+
+	if (p[1] == '\0')
+		return NULL;   /* "/" -> invalid */
+
+	return p + 1;
+}
+
+int erofs_tree_from_nix_store(struct erofs_importer *im, const char *path)
+{
+	const char *base;
+	struct erofs_inode *inode;
+	struct erofs_dentry *d;
+
+	assert(IS_ROOT(im->root));
+
+	base = basename_nix(path);
+	if (!base)
+		return -EINVAL;
+
+	inode = erofs_iget_from_local(im, path);
+	if (IS_ERR(inode)) {
+		return PTR_ERR(inode);
+	}
+	d = erofs_d_alloc(im->root, base);
+	if (IS_ERR(d)) {
+		erofs_iput(inode);
+		return PTR_ERR(d);
+	}
+	d->inode = inode;
+	d->type = erofs_mode_to_ftype(inode->i_mode);
+	inode->i_parent = NULL;
+	im->root->datasource = EROFS_INODE_DATA_SOURCE_NONE;
+	im->root->i_nlink += S_ISDIR(inode->i_mode);
+	return 0;
+}

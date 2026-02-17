@@ -53,6 +53,7 @@ struct erofs_inode *erofs_make_empty_root_inode(struct erofs_importer *im,
 						struct erofs_sb_info *sbi);
 struct erofs_inode *erofs_make_root_inode_from_sourcedir(struct erofs_importer *im,
 							const char *path);
+int erofs_tree_from_nix_store(struct erofs_importer *im, const char *path);
 #ifdef __cplusplus
 }
 #endif
