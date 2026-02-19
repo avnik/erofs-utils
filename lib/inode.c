@@ -2270,21 +2270,6 @@ struct erofs_mkfs_buildtree_ctx {
 
 static int __erofs_mkfs_build_tree(const struct erofs_mkfs_btctx *ctx)
 {
-	struct erofs_importer *im = ctx->im;
-
-	if (!ctx->rebuild) {
-		struct erofs_importer_params *params = im->params;
-		struct stat st;
-		int err;
-
-		err = lstat(params->source, &st);
-		if (err)
-			return -errno;
-
-		err = erofs_fill_inode(im, im->root, &st, params->source);
-		if (err)
-			return err;
-	}
 	return erofs_mkfs_dump_tree(ctx);
 }
 
@@ -2532,5 +2517,33 @@ struct erofs_inode *erofs_make_empty_root_inode(struct erofs_importer *im,
 	root->i_mtime = root->sbi->epoch + root->sbi->build_time;
 	root->i_mtime_nsec = root->sbi->fixed_nsec;
 	root->i_nlink = 2;
+	return root;
+}
+
+struct erofs_inode *erofs_make_root_inode_from_sourcedir(struct erofs_importer *im,
+							const char *path)
+{
+	struct erofs_inode *root;
+	struct stat st;
+	int ret;
+
+	ret = lstat(path, &st);
+	if (ret)
+		return ERR_PTR(-errno);
+
+	if (!S_ISDIR(st.st_mode))
+		return ERR_PTR(-ENOTDIR);
+
+	root = erofs_new_inode(im->sbi);
+	if (IS_ERR(root))
+		return root;
+
+	ret = erofs_fill_inode(im, root, &st, path);
+	if (ret) {
+		erofs_iput(root);
+		return ERR_PTR(ret);
+	}
+	root->datasource = EROFS_INODE_DATA_SOURCE_LOCALPATH;
+	root->i_parent = root;
 	return root;
 }
