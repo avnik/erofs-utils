@@ -2005,7 +2005,8 @@ int main(int argc, char **argv)
 			goto exit;
 		}
 
-		root = erofs_new_inode(&g_sbi);
+		root = erofs_make_root_inode_from_sourcedir(&importer,
+							   cfg.c_src_path);
 		if (IS_ERR(root)) {
 			err = PTR_ERR(root);
 			goto exit;
