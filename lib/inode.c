@@ -1917,7 +1917,9 @@ static int erofs_prepare_dir_inode(const struct erofs_mkfs_btctx *ctx,
 		++nr_subdirs;
 	}
 
-	if (!ctx->rebuild) {
+	/* Rebuild must not walk host paths; only import real local-path dirs. */
+	if (!ctx->rebuild &&
+	    dir->datasource == EROFS_INODE_DATA_SOURCE_LOCALPATH) {
 		ret = erofs_mkfs_import_localdir(im, dir,
 						 &nr_subdirs, &i_nlink);
 		if (ret)
