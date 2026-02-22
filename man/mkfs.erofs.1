@@ -24,6 +24,8 @@ a local directory
 .IP \(bu 2
 a (compressed) tarball
 .IP \(bu 2
+a nix closure list
+.IP \(bu 2
 an S3 bucket or a prefix within it
 .IP \(bu 2
 an OCI image reference
@@ -345,6 +347,28 @@ Specify maximum decompressed extent size in bytes. The default is unlimited.
 .B \-\-mkfs-time
 (used together with \fB-T\fR) the given timestamp is only applied to the build
 time.
+.TP
+.BI "\-\-mount-point " PATH
+Set the prefix path inside the target filesystem.
+By default, files are placed under
+.BR / .
+.TP
+.BI "\-\-nix-closure=" FILE
+Read newline-delimited absolute source paths from
+.I FILE
+and import each listed path as a top-level entry.
+Empty lines and lines beginning with
+.B #
+are ignored.
+Each non-empty entry must be an absolute path.
+If
+.B --mount-point
+is specified, imported entries are placed under that prefix
+(e.g.
+.B --mount-point /nix/store
+results in
+.B /nix/store/<entry>
+inside the image).
 .TP
 .BI "\-\-mount-point=" path
 Specify the prefix of target filesystem path (default: /).
