@@ -1668,6 +1668,97 @@ void erofs_show_progs(int argc, char *argv[])
 		printf("%s %s\n", basename(argv[0]), cfg.c_version);
 }
 
+static struct erofs_inode *mkfs_erofs_wrap_inode(struct erofs_importer *im,
+						  struct erofs_inode *child,
+						  const char *name)
+{
+	struct erofs_inode *parent;
+	struct erofs_dentry *d;
+
+	if (!name || !name[0] || !strcmp(name, ".") || !strcmp(name, ".."))
+		return ERR_PTR(-EINVAL);
+	if (strlen(name) > EROFS_NAME_LEN)
+		return ERR_PTR(-ENAMETOOLONG);
+
+	parent = erofs_new_inode(im->sbi);
+	if (IS_ERR(parent))
+		return parent;
+
+	parent->i_srcpath = strdup("/");
+	if (!parent->i_srcpath) {
+		erofs_iput(parent);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	parent->i_mode = S_IFDIR | 0777;
+	parent->i_uid = child->i_uid;
+	parent->i_gid = child->i_gid;
+	parent->i_mtime = child->i_mtime;
+	parent->i_mtime_nsec = child->i_mtime_nsec;
+	parent->i_nlink = 2;
+	parent->datasource = EROFS_INODE_DATA_SOURCE_NONE;
+	parent->dev = child->dev;
+	parent->i_parent = parent;
+
+	d = erofs_d_alloc(parent, name);
+	if (IS_ERR(d)) {
+		erofs_iput(parent);
+		return ERR_PTR(PTR_ERR(d));
+	}
+
+	d->inode = child;
+	d->type = EROFS_FT_DIR;
+	child->i_parent = parent;
+	return parent;
+}
+
+static int mkfs_erofs_wrap_root_with_mount_point(struct erofs_importer *im)
+{
+	char *mount, *mp, *end;
+
+	if (!cfg.mount_point || !cfg.mount_point[0] || !strcmp(cfg.mount_point, "/"))
+		return 0;
+
+	mount = strdup(cfg.mount_point);
+	if (!mount)
+		return -ENOMEM;
+	mp = mount;
+
+	end = mp + strlen(mp);
+	while (end > mp && end[-1] == '/')
+		*--end = '\0';
+	while (*mp == '/')
+		++mp;
+
+	if (*mp) {
+		while (*mp) {
+			char *base = strrchr(mp, '/');
+			char *name = base ? base + 1 : mp;
+			struct erofs_inode *newroot;
+
+			if (*name) {
+				newroot = mkfs_erofs_wrap_inode(im, im->root, name);
+				if (IS_ERR(newroot)) {
+					int ret = PTR_ERR(newroot);
+
+					free(mount);
+					return ret;
+				}
+				im->root = newroot;
+			}
+
+			if (!base)
+				break;
+			*base = '\0';
+			while (base > mp && base[-1] == '/')
+				*--base = '\0';
+		}
+	}
+
+	free(mount);
+	return 0;
+}
+
 /* Closure format: one absolute /nix/store path per line. */
 static int mkfs_erofs_import_nix_store_paths(struct erofs_importer *importer,
 					      const char *closure)
@@ -1728,6 +1819,9 @@ static int mkfs_erofs_import_nix_store_paths(struct erofs_importer *importer,
 			break;
 		}
 	}
+
+	if (!ret)
+		ret = mkfs_erofs_wrap_root_with_mount_point(importer);
 
 	fclose(f);
 	return ret;
@@ -2069,6 +2163,8 @@ int main(int argc, char **argv)
 		err = erofs_mkfs_rebuild_load_trees(root);
     } else if (source_mode == EROFS_MKFS_SOURCE_NIX) {
         err = mkfs_erofs_import_nix_store_paths(&importer, cfg.c_src_path);
+		if (!err)
+			root = importer.root;
 #ifdef S3EROFS_ENABLED
 	} else if (source_mode == EROFS_MKFS_SOURCE_S3) {
 		if (!s3cfg.access_key[0] && getenv("AWS_ACCESS_KEY_ID")) {
